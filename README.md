@@ -6,6 +6,7 @@ Programa optimizado para descargar todas las tareas de un proyecto JIRA a format
 
 - **Eficiente**: Maneja cientos de tareas con paginación optimizada
 - **Completo**: Extrae todos los campos relevantes incluyendo comentarios e histórico
+- **Descarga de adjuntos**: Descarga automática de archivos adjuntos organizados por tarjeta
 - **Rápido**: Procesamiento optimizado con indicadores de progreso
 - **Fácil de usar**: Interfaz interactiva por consola
 
@@ -28,6 +29,7 @@ El CSV incluye las siguientes columnas:
 - **Etiquetas**: Labels asignadas
 - **Componentes**: Componentes del proyecto
 - **Versiones**: Versiones de corrección
+- **Adjuntos**: Número de archivos adjuntos en la tarjeta
 - **Comentarios**: Todos los comentarios con fecha y autor
 - **Histórico**: Registro completo de cambios
 
@@ -97,9 +99,56 @@ Procesando issue 200/247...
 Exportando 247 issues a GADEA_issues_20231223_143052.csv...
 ✓ Archivo CSV creado: GADEA_issues_20231223_143052.csv
 
-✓ Proceso completado en 45.32 segundos
-✓ Archivo generado: GADEA_issues_20231223_143052.csv
+Exportando 247 issues a GADEA_issues_20231223_143052.csv...
+✓ Archivo CSV creado: GADEA_issues_20231223_143052.csv
+
+¿Descargar archivos adjuntos? (s/n): s
+
+Descargando adjuntos...
+
+GADEA-1: 2 adjunto(s)
+  ↓ Descargando: screenshot.png (245678 bytes)...
+  ✓ screenshot.png
+  ↓ Descargando: documento.pdf (1024567 bytes)...
+  ✓ documento.pdf
+
+GADEA-5: 1 adjunto(s)
+  ↓ Descargando: log_error.txt (5432 bytes)...
+  ✓ log_error.txt
+
+✓ Adjuntos descargados: 3/3
+✓ Adjuntos guardados en: GADEA_attachments_20231223_143052
+
+✓ Proceso completado en 52.18 segundos
+✓ Archivo CSV generado: GADEA_issues_20231223_143052.csv
 ```
+
+## Descarga de Archivos Adjuntos
+
+El programa puede descargar automáticamente todos los archivos adjuntos de las tarjetas:
+
+- **Organización**: Los adjuntos se guardan en carpetas por tarjeta (ej: `GADEA-123/`)
+- **Estructura**: `{PROYECTO}_attachments_{TIMESTAMP}/{ISSUE-KEY}/{archivo}`
+- **Detección de duplicados**: No descarga archivos que ya existen
+- **Información**: Muestra el progreso de descarga con tamaño de archivo
+- **Nombres seguros**: Sanitiza nombres de archivo para evitar problemas
+
+### Ejemplo de Estructura de Directorios
+
+```
+GADEA_attachments_20231223_143052/
+├── GADEA-1/
+│   ├── GADEA-1_screenshot.png
+│   └── GADEA-1_documento.pdf
+├── GADEA-5/
+│   └── GADEA-5_log_error.txt
+└── GADEA-42/
+    ├── GADEA-42_diseño_v1.jpg
+    ├── GADEA-42_diseño_v2.jpg
+    └── GADEA-42_especificaciones.docx
+```
+
+**Nota**: Los archivos adjuntos se guardan con el prefijo del ID de la tarjeta (ej: `GADEA-1_archivo.pdf`) para facilitar su identificación y evitar conflictos de nombres.
 
 ## Optimizaciones para Grandes Volúmenes
 
@@ -145,6 +194,7 @@ El programa está optimizado para manejar proyectos con cientos de tareas:
 - Descripción y comentarios limitados a 1000 caracteres por campo para optimizar el CSV
 - Requiere permisos de lectura en el proyecto JIRA
 - Funciona con JIRA Cloud y Server (API v3)
+- La descarga de adjuntos requiere permisos de acceso a los archivos en JIRA
 
 ## Soporte
 

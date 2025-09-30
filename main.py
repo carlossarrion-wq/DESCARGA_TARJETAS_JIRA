@@ -10,7 +10,9 @@ import json
 from datetime import datetime
 import sys
 import time
+import os
 from urllib.parse import quote
+from pathlib import Path
 
 class JiraDownloader:
     def __init__(self, base_url, username, api_token):
@@ -67,7 +69,7 @@ class JiraDownloader:
             'key', 'summary', 'description', 'status', 'issuetype',
             'priority', 'assignee', 'reporter', 'created', 'updated',
             'resolutiondate', 'resolution', 'labels', 'components',
-            'fixVersions', 'comment'
+            'fixVersions', 'comment', 'attachment'
         ]
         
         fields_param = ','.join(fields)
@@ -139,7 +141,8 @@ class JiraDownloader:
             'Resolución': fields.get('resolution', {}).get('name', '') if fields.get('resolution') else '',
             'Etiquetas': ', '.join(fields.get('labels', [])),
             'Componentes': ', '.join([c.get('name', '') for c in fields.get('components', [])]),
-            'Versiones': ', '.join([v.get('name', '') for v in fields.get('fixVersions', [])])
+            'Versiones': ', '.join([v.get('name', '') for v in fields.get('fixVersions', [])]),
+            'Adjuntos': str(len(fields.get('attachment', [])))
         }
         
         # Comentarios (información clave para incidencias GADEA)
@@ -240,6 +243,124 @@ class JiraDownloader:
             
         except Exception as e:
             print(f"Error creando CSV: {e}")
+    
+    def get_attachments(self, issue):
+        """
+        Obtiene la lista de adjuntos de una issue
+        
+        Args:
+            issue: Objeto issue de JIRA
+            
+        Returns:
+            Lista de diccionarios con información de los adjuntos
+        """
+        fields = issue.get('fields', {})
+        attachments = fields.get('attachment', [])
+        
+        attachment_list = []
+        for attachment in attachments:
+            attachment_info = {
+                'id': attachment.get('id', ''),
+                'filename': attachment.get('filename', ''),
+                'size': attachment.get('size', 0),
+                'mimeType': attachment.get('mimeType', ''),
+                'content': attachment.get('content', ''),
+                'created': attachment.get('created', ''),
+                'author': attachment.get('author', {}).get('displayName', 'Desconocido')
+            }
+            attachment_list.append(attachment_info)
+        
+        return attachment_list
+    
+    def download_attachment(self, attachment_url, output_path):
+        """
+        Descarga un archivo adjunto
+        
+        Args:
+            attachment_url: URL del adjunto
+            output_path: Ruta donde guardar el archivo
+            
+        Returns:
+            True si se descargó correctamente, False en caso contrario
+        """
+        try:
+            response = self.session.get(attachment_url, stream=True)
+            
+            if response.status_code == 200:
+                # Crear directorio si no existe
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                
+                # Guardar archivo
+                with open(output_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                return True
+            else:
+                print(f"  ✗ Error descargando adjunto: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            print(f"  ✗ Error descargando adjunto: {e}")
+            return False
+    
+    def download_all_attachments(self, issues, base_output_dir):
+        """
+        Descarga todos los adjuntos de las issues
+        
+        Args:
+            issues: Lista de issues
+            base_output_dir: Directorio base donde guardar los adjuntos
+        """
+        print(f"\nDescargando adjuntos...")
+        
+        total_attachments = 0
+        downloaded_attachments = 0
+        
+        for issue in issues:
+            issue_key = issue.get('key', '')
+            attachments = self.get_attachments(issue)
+            
+            if not attachments:
+                continue
+            
+            total_attachments += len(attachments)
+            
+            # Crear directorio para esta issue
+            issue_dir = os.path.join(base_output_dir, issue_key)
+            
+            print(f"\n{issue_key}: {len(attachments)} adjunto(s)")
+            
+            for attachment in attachments:
+                filename = attachment['filename']
+                attachment_url = attachment['content']
+                
+                # Sanitizar nombre de archivo y añadir prefijo con el ID de la tarjeta
+                safe_filename = "".join(c for c in filename if c.isalnum() or c in (' ', '.', '_', '-')).rstrip()
+                prefixed_filename = f"{issue_key}_{safe_filename}"
+                output_path = os.path.join(issue_dir, prefixed_filename)
+                
+                # Verificar si ya existe
+                if os.path.exists(output_path):
+                    print(f"  ⊙ {prefixed_filename} (ya existe)")
+                    downloaded_attachments += 1
+                    continue
+                
+                print(f"  ↓ Descargando: {filename} → {prefixed_filename} ({attachment['size']} bytes)...")
+                
+                if self.download_attachment(attachment_url, output_path):
+                    print(f"  ✓ {prefixed_filename}")
+                    downloaded_attachments += 1
+                else:
+                    print(f"  ✗ Error con {prefixed_filename}")
+                
+                # Pequeña pausa para no sobrecargar
+                time.sleep(0.1)
+        
+        print(f"\n✓ Adjuntos descargados: {downloaded_attachments}/{total_attachments}")
+        
+        if downloaded_attachments > 0:
+            print(f"✓ Adjuntos guardados en: {base_output_dir}")
 
 def main():
     """Función principal"""
@@ -285,9 +406,16 @@ def main():
     filename = f"{PROJECT_KEY}_issues_{timestamp}.csv"
     downloader.export_to_csv(issues_data, filename)
     
+    # Preguntar si desea descargar adjuntos
+    download_attachments = input("\n¿Descargar archivos adjuntos? (s/n): ").strip().lower()
+    
+    if download_attachments == 's':
+        attachments_dir = f"{PROJECT_KEY}_attachments_{timestamp}"
+        downloader.download_all_attachments(issues, attachments_dir)
+    
     elapsed_time = time.time() - start_time
     print(f"\n✓ Proceso completado en {elapsed_time:.2f} segundos")
-    print(f"✓ Archivo generado: {filename}")
+    print(f"✓ Archivo CSV generado: {filename}")
 
 if __name__ == "__main__":
     main()
