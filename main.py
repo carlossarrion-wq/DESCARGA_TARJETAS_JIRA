@@ -13,6 +13,7 @@ import time
 import os
 from urllib.parse import quote
 from pathlib import Path
+import configparser
 
 class JiraDownloader:
     def __init__(self, base_url, username, api_token):
@@ -51,18 +52,21 @@ class JiraDownloader:
             print(f"✗ Error de conexión: {e}")
             return False
     
-    def get_all_issues(self, project_key):
+    def get_all_issues(self, project_key, max_issues=None):
         """
-        Obtiene todas las issues del proyecto de forma eficiente
+        Obtiene todas las issues del proyecto usando estrategia de rangos numéricos
         
         Args:
-            project_key: Clave del proyecto (ej: GADEA)
+            project_key: Clave del proyecto (ej: NC)
+            max_issues: Número máximo de issues a descargar (None = sin límite)
         """
-        print(f"Descargando issues del proyecto {project_key}...")
+        if max_issues:
+            print(f"Descargando issues del proyecto {project_key} (máximo {max_issues})...")
+        else:
+            print(f"Descargando todas las issues del proyecto {project_key}...")
         
         all_issues = []
-        start_at = 0
-        max_results = 100  # Tamaño de página optimizado
+        existing_keys = set()
         
         # Campos que queremos obtener (optimizado para reducir payload)
         fields = [
@@ -74,42 +78,74 @@ class JiraDownloader:
         
         fields_param = ','.join(fields)
         
+        # Estrategia: descargar en lotes de 100 números
+        # Empezar desde 1 para capturar todas las issues
+        batch_size = 100
+        current_start = 1
+        consecutive_empty_batches = 0
+        max_empty_batches = 5  # Si encontramos 5 lotes vacíos consecutivos, paramos
+        
         while True:
-            # JQL optimizado para el proyecto
-            jql = f'project = "{project_key}" ORDER BY key ASC'
+            current_end = current_start + batch_size - 1
+            
+            # JQL para buscar issues en un rango numérico específico
+            jql = f'project = {project_key} AND key >= {project_key}-{current_start} AND key <= {project_key}-{current_end} ORDER BY key ASC'
             
             params = {
                 'jql': jql,
-                'startAt': start_at,
-                'maxResults': max_results,
+                'startAt': 0,
+                'maxResults': batch_size,
                 'fields': fields_param,
-                'expand': 'changelog'  # Para obtener el histórico
+                'expand': 'changelog'
             }
             
             try:
                 response = self.session.get(
-                    f"{self.base_url}/rest/api/3/search",
+                    f"{self.base_url}/rest/api/3/search/jql",
                     params=params
                 )
                 
                 if response.status_code != 200:
-                    print(f"Error en la consulta: {response.status_code} - {response.text}")
+                    print(f"Error en la consulta: {response.status_code}")
                     break
                 
                 data = response.json()
                 issues = data.get('issues', [])
                 
                 if not issues:
+                    consecutive_empty_batches += 1
+                    if consecutive_empty_batches >= max_empty_batches:
+                        print(f"No se encontraron más issues después de {max_empty_batches} lotes vacíos")
+                        break
+                    # Continuar buscando en el siguiente rango
+                    current_start = current_end + 1
+                    time.sleep(0.1)
+                    continue
+                
+                # Resetear contador de lotes vacíos
+                consecutive_empty_batches = 0
+                
+                # Añadir solo issues únicas
+                new_issues_count = 0
+                for issue in issues:
+                    issue_key = issue.get('key', '')
+                    if issue_key and issue_key not in existing_keys:
+                        all_issues.append(issue)
+                        existing_keys.add(issue_key)
+                        new_issues_count += 1
+                
+                # Mostrar progreso
+                total = data.get('total', 0)
+                print(f"Rango {project_key}-{current_start} a {project_key}-{current_end}: {new_issues_count} nuevas issues (Total: {len(all_issues)})")
+                
+                # Si hemos alcanzado el límite máximo (si existe), salir
+                if max_issues and len(all_issues) >= max_issues:
+                    print(f"✓ Límite de {max_issues} issues alcanzado")
+                    all_issues = all_issues[:max_issues]
                     break
                 
-                all_issues.extend(issues)
-                print(f"Descargadas {len(all_issues)} de {data.get('total', '?')} issues...")
-                
-                # Si hemos obtenido todas las issues, salir
-                if len(issues) < max_results:
-                    break
-                
-                start_at += max_results
+                # Avanzar al siguiente lote
+                current_start = current_end + 1
                 
                 # Pequeña pausa para no sobrecargar el servidor
                 time.sleep(0.1)
@@ -118,7 +154,7 @@ class JiraDownloader:
                 print(f"Error descargando issues: {e}")
                 break
         
-        print(f"✓ Total descargadas: {len(all_issues)} issues")
+        print(f"✓ Total descargadas: {len(all_issues)} issues únicas")
         return all_issues
     
     def extract_issue_data(self, issue):
@@ -362,30 +398,85 @@ class JiraDownloader:
         if downloaded_attachments > 0:
             print(f"✓ Adjuntos guardados en: {base_output_dir}")
 
+def load_config():
+    """Carga la configuración desde el archivo config.ini"""
+    config = configparser.ConfigParser()
+    config_file = 'jira_config.ini'
+    
+    # Valores por defecto
+    defaults = {
+        'jira_url': 'https://naturgy-adn.atlassian.net',
+        'username': 'carlos.sarrion@es.ibm.com',
+        'api_token': '',
+        'project_key': 'NC'
+    }
+    
+    # Intentar cargar configuración existente
+    if os.path.exists(config_file):
+        config.read(config_file)
+        if 'JIRA' in config:
+            defaults.update(dict(config['JIRA']))
+    
+    return defaults, config_file
+
+def save_config(jira_url, username, api_token, project_key, config_file):
+    """Guarda la configuración en el archivo config.ini"""
+    config = configparser.ConfigParser()
+    config['JIRA'] = {
+        'jira_url': jira_url,
+        'username': username,
+        'api_token': api_token,
+        'project_key': project_key
+    }
+    
+    with open(config_file, 'w') as f:
+        config.write(f)
+    print(f"✓ Configuración guardada en {config_file}")
+
 def main():
     """Función principal"""
     print("=== Descargador de Tareas JIRA ===\n")
     
-    # Configuración (puedes modificar estos valores)
-    JIRA_URL = input("URL de JIRA (ej: https://company.atlassian.net): ").strip()
-    USERNAME = input("Email/Usuario: ").strip()
-    API_TOKEN = input("API Token: ").strip()
-    PROJECT_KEY = input("Clave del Proyecto (ej: GADEA): ").strip().upper()
+    # Cargar configuración
+    defaults, config_file = load_config()
     
-    if not all([JIRA_URL, USERNAME, API_TOKEN, PROJECT_KEY]):
+    # Solicitar configuración con valores por defecto
+    print("Presiona Enter para usar el valor por defecto entre corchetes\n")
+    
+    jira_url = input(f"URL de JIRA [{defaults['jira_url']}]: ").strip()
+    if not jira_url:
+        jira_url = defaults['jira_url']
+    
+    username = input(f"Email/Usuario [{defaults['username']}]: ").strip()
+    if not username:
+        username = defaults['username']
+    
+    api_token = input(f"API Token [{defaults['api_token'][:20]}...]: ").strip()
+    if not api_token:
+        api_token = defaults['api_token']
+    
+    project_key = input(f"Clave del Proyecto [{defaults['project_key']}]: ").strip().upper()
+    if not project_key:
+        project_key = defaults['project_key']
+    
+    if not all([jira_url, username, api_token, project_key]):
         print("Error: Todos los campos son obligatorios")
         return
     
+    # Guardar configuración
+    save_config(jira_url, username, api_token, project_key, config_file)
+    print()
+    
     # Crear descargador
-    downloader = JiraDownloader(JIRA_URL, USERNAME, API_TOKEN)
+    downloader = JiraDownloader(jira_url, username, api_token)
     
     # Probar conexión
     if not downloader.test_connection():
         return
     
-    # Descargar issues
+    # Descargar issues (sin límite)
     start_time = time.time()
-    issues = downloader.get_all_issues(PROJECT_KEY)
+    issues = downloader.get_all_issues(project_key)
     
     if not issues:
         print("No se encontraron issues en el proyecto")
@@ -403,14 +494,14 @@ def main():
     
     # Exportar a CSV
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"{PROJECT_KEY}_issues_{timestamp}.csv"
+    filename = f"{project_key}_issues_{timestamp}.csv"
     downloader.export_to_csv(issues_data, filename)
     
     # Preguntar si desea descargar adjuntos
     download_attachments = input("\n¿Descargar archivos adjuntos? (s/n): ").strip().lower()
     
     if download_attachments == 's':
-        attachments_dir = f"{PROJECT_KEY}_attachments_{timestamp}"
+        attachments_dir = f"{project_key}_attachments_{timestamp}"
         downloader.download_all_attachments(issues, attachments_dir)
     
     elapsed_time = time.time() - start_time
